@@ -1,0 +1,109 @@
+name: CI-CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE_NAME: cc-underwriting-api
+  PYTHON_VER: "3.11"
+
+jobs:
+  test:
+    name: Lint and Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: cc_test
+          POSTGRES_USER: ccapi
+          POSTGRES_PASSWORD: test_pass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ccapi"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://ccapi:test_pass@localhost:5432/cc_test
+      SECRET_KEY: test-secret-key-not-for-production
+      MODEL_PATH: models/cc_model_v1.joblib
+      ADMIN_PASSWORD: TestAdmin123
+      ADMIN_EMAIL: admin@test.local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VER }}
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx ruff
+      - name: Lint
+        run: ruff check app/ --exit-zero
+      - name: Check model
+        run: ls -lh models/cc_model_v1.joblib
+      - name: Test
+        run: python -m pytest tests/ -v --tb=short -x
+
+  build-and-push:
+    name: Build and Push to ACR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set image tag
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME}-$(echo ${GITHUB_SHA} | cut -c1-7)"
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
+
+  deploy:
+    name: Deploy to Azure Web App
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
+          images: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }}
+      - name: Smoke test
+        run: |
+          sleep 30
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health" || echo "000")
+            echo "Attempt $i - HTTP $STATUS"
+            [ "$STATUS" = "200" ] && exit 0
+            sleep 15
+          done
+          echo "Health check failed"
+          exit 1
+      - name: Logout
+        if: always()
+        run: az logout
