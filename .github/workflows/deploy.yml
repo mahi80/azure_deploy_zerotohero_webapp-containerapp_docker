@@ -212,7 +212,7 @@ jobs:
               {"name": "DOCKER_REGISTRY_SERVER_USERNAME",  "value": "${{ secrets.ACR_USERNAME }}"},
               {"name": "DOCKER_REGISTRY_SERVER_PASSWORD",  "value": "${{ secrets.ACR_PASSWORD }}"},
               {"name": "WEBSITES_PORT",                    "value": "8000"},
-              {"name": "DATABASE_URL",                     "value": "postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ secrets.DB_HOST }}:5432/cc_underwriting"},
+              {"name": "DATABASE_URL",                     "value": "postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ secrets.DB_HOST }}:5432/cc_underwriting?sslmode=require"},
               {"name": "SECRET_KEY",                       "value": "${{ secrets.SECRET_KEY }}"},
               {"name": "MODEL_PATH",                       "value": "models/cc_model_v1.joblib"},
               {"name": "ADMIN_PASSWORD",                   "value": "${{ secrets.ADMIN_PASSWORD }}"},
@@ -282,7 +282,7 @@ jobs:
           cpu:             1
           memory:          2
           environment-variables: >
-            DATABASE_URL=postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ secrets.DB_HOST }}:5432/cc_underwriting
+            DATABASE_URL=postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ secrets.DB_HOST }}:5432/cc_underwriting?sslmode=require
             SECRET_KEY=${{ secrets.SECRET_KEY }}
             MODEL_PATH=models/cc_model_v1.joblib
             ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
