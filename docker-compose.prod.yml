@@ -1,0 +1,136 @@
+# ══════════════════════════════════════════════════════════════════
+# docker-compose.prod.yml  —  PRODUCTION (Azure / Cloud)
+#
+# Usage (merge with base file):
+#   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Key differences from dev:
+#   - Pulls pre-built image from Azure Container Registry (ACR)
+#     instead of building locally
+#   - No host port exposure for DB (only API port is public)
+#   - All secrets come from environment variables — never hard-coded
+#   - PostgreSQL data volume uses a named bind-mount path suitable
+#     for Azure Files / managed disk persistence
+#   - Resource limits prevent runaway containers
+#   - Log driver: json-file with rotation to prevent disk fill
+# ══════════════════════════════════════════════════════════════════
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL (production) ─────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: cc_postgres_prod
+    restart: always                        # always restart — critical service
+
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-cc_underwriting}
+      POSTGRES_USER:     ${POSTGRES_USER:-ccapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+
+    # ── NO host port exposure in production ───────────────────────
+    # DB is only reachable by other containers on cc_net.
+    # If you need psql access, use: docker exec -it cc_postgres_prod psql ...
+    expose:
+      - "5432"
+
+    volumes:
+      # ── Persistent bind-mount ─────────────────────────────────
+      # /mnt/data/pgdata should be an Azure Files mount or managed disk
+      # Ensure the path exists on the host before running.
+      - /mnt/data/pgdata:/var/lib/postgresql/data
+
+      # Init script (idempotent — only runs when /mnt/data/pgdata is empty)
+      - ./migrations/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ccapi} -d ${POSTGRES_DB:-cc_underwriting}"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    # ── Resource limits ──────────────────────────────────────────
+    deploy:
+      resources:
+        limits:
+          cpus:   "1.0"
+          memory: "512M"
+        reservations:
+          memory: "256M"
+
+    # ── Log rotation ─────────────────────────────────────────────
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    networks:
+      - cc_net_prod
+
+  # ── FastAPI Application (production) ───────────────────────────
+  api:
+    # Pull from Azure Container Registry — set in GitHub Actions / CI
+    image: ${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG:-latest}
+
+    container_name: cc_api_prod
+    restart: always
+
+    environment:
+      DATABASE_URL:                  "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
+      SECRET_KEY:                    ${SECRET_KEY:?SECRET_KEY must be set}
+      ACCESS_TOKEN_EXPIRE_MINUTES:   ${TOKEN_EXPIRE:-60}
+      MODEL_PATH:                    "models/cc_model_v1.joblib"
+      ADMIN_USERNAME:                ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD:                ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
+      ADMIN_EMAIL:                   ${ADMIN_EMAIL:-admin@ccapi.local}
+      DEBUG:                         "false"
+
+    ports:
+      - "8000:8000"    # Azure App Service routes traffic here via WEBSITES_PORT
+
+    volumes:
+      # Mount the model from persistent storage so it can be updated
+      # without rebuilding the image
+      - /mnt/data/models:/app/models:ro
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    # ── Resource limits ──────────────────────────────────────────
+    deploy:
+      resources:
+        limits:
+          cpus:   "2.0"
+          memory: "2G"
+        reservations:
+          memory: "512M"
+
+    # ── Log rotation ─────────────────────────────────────────────
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    networks:
+      - cc_net_prod
+
+volumes:
+  # Production volumes are bind-mounts to /mnt/data — no Docker-managed volumes
+  # so Azure Files / managed disks can be mounted at /mnt/data on the VM
+
+networks:
+  cc_net_prod:
+    name: cc_underwriting_prod_net
+    driver: bridge

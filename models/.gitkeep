@@ -1,0 +1,9 @@
+# The actual model files (.joblib) are excluded via .gitignore.
+# Store them in Azure Blob Storage, S3, or DVC remote — not in git.
+#
+# To download the model in CI/CD, add this step to your workflow:
+#   az storage blob download \
+#     --container-name models \
+#     --name cc_model_v1.joblib \
+#     --file models/cc_model_v1.joblib \
+#     --connection-string "$AZURE_STORAGE_CONNECTION_STRING"

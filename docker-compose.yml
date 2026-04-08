@@ -1,0 +1,120 @@
+# ══════════════════════════════════════════════════════════════════
+# docker-compose.yml  —  LOCAL DEVELOPMENT
+#
+# Services:
+#   db    — PostgreSQL 16 with a named volume (data survives container restarts)
+#   api   — FastAPI app (hot-reload via bind mount for development)
+#
+# Usage:
+#   docker-compose up -d          # start in background
+#   docker-compose logs -f api    # stream API logs
+#   docker-compose down           # stop (data persisted in volume)
+#   docker-compose down -v        # stop AND wipe the database volume
+# ══════════════════════════════════════════════════════════════════
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine        # Alpine = smaller image (~80 MB)
+    container_name: cc_postgres
+    restart: unless-stopped          # restart on crash, but not on manual docker stop
+
+    environment:
+      POSTGRES_DB:       cc_underwriting   # database name
+      POSTGRES_USER:     ccapi             # application user
+      POSTGRES_PASSWORD: ccapi_pass        # CHANGE THIS in production via .env
+
+    ports:
+      - "5432:5432"   # expose to host so you can connect with DBeaver / psql locally
+
+    volumes:
+      # ── Persistent data volume ────────────────────────────────
+      # All PostgreSQL data files live here.
+      # Named volume: managed by Docker, survives container removal.
+      # Data is stored at: /var/lib/docker/volumes/cc_underwriting_pgdata/_data
+      - pgdata:/var/lib/postgresql/data
+
+      # ── Init script ───────────────────────────────────────────
+      # Any .sql file in /docker-entrypoint-initdb.d/ runs ONCE on
+      # first container start (when pgdata volume is empty).
+      - ./migrations/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccapi -d cc_underwriting"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    networks:
+      - cc_net
+
+  # ── FastAPI Application ─────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime              # use the runtime stage (not builder)
+
+    container_name: cc_api
+    restart: unless-stopped
+
+    environment:
+      # ── Database ───────────────────────────────────────────────
+      # Uses service name 'db' as hostname — Docker's internal DNS
+      DATABASE_URL: "postgresql://ccapi:ccapi_pass@db:5432/cc_underwriting"
+
+      # ── Security ───────────────────────────────────────────────
+      # REPLACE with: python -c "import secrets; print(secrets.token_hex(32))"
+      SECRET_KEY: "dev-secret-change-in-production-use-openssl-rand-hex-32"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+
+      # ── Model ──────────────────────────────────────────────────
+      MODEL_PATH: "models/cc_model_v1.joblib"
+
+      # ── Admin seed credentials ─────────────────────────────────
+      ADMIN_USERNAME: "admin"
+      ADMIN_PASSWORD: "Admin@12345"
+      ADMIN_EMAIL:    "admin@ccapi.local"
+
+      # ── Runtime ────────────────────────────────────────────────
+      DEBUG: "false"
+
+    ports:
+      - "8000:8000"   # http://localhost:8000/docs
+
+    volumes:
+      # Mount models directory so you can swap the joblib without rebuilding
+      - ./models:/app/models:ro
+
+    depends_on:
+      db:
+        condition: service_healthy   # wait for postgres healthcheck to pass
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    networks:
+      - cc_net
+
+# ══════════════════════════════════════════════════════════════════
+# Named volumes — persisted by Docker, survive container removal
+# ══════════════════════════════════════════════════════════════════
+volumes:
+  pgdata:
+    name: cc_underwriting_pgdata
+    driver: local
+
+# ══════════════════════════════════════════════════════════════════
+# Internal network — containers talk to each other; nothing else
+# ══════════════════════════════════════════════════════════════════
+networks:
+  cc_net:
+    name: cc_underwriting_net
+    driver: bridge

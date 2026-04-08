@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets — NEVER commit these
+.env
+.env.local
+.env.*.local
+
+# ML model artifacts — too large for git; use DVC or Azure Blob Storage
+models/*.joblib
+models/*.pkl
+models/*.h5
+models/*.bin
+!models/.gitkeep
+
+# Test artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+test-results.xml
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.tar
+
+# Data files — store in Azure Blob / S3
+data/
+*.csv
+!tests/fixtures/*.csv   # small test fixtures ok
