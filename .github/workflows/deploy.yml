@@ -1,58 +1,39 @@
-# ══════════════════════════════════════════════════════════════════
-# .github/workflows/deploy.yml
-#
-# CI/CD Pipeline:  GitHub Push  →  Build  →  Test  →  Push to ACR
-#                  →  Deploy Azure Web App  →  Deploy ACI (optional)
+# CI/CD Pipeline: GitHub Push -> Build -> Test -> Push to ACR -> Deploy
 #
 # Triggers:
-#   - Push to 'main'      → deploy to production
-#   - Push to 'staging'   → deploy to staging slot
-#   - Pull Request        → build + test only (no deploy)
+#   - Push to 'main'    -> deploy to production
+#   - Pull Request       -> build + test only (no deploy)
 #
-# Required GitHub Secrets (Settings → Secrets → Actions):
-#   AZURE_CREDENTIALS         — Service principal JSON from:
-#                               az ad sp create-for-rbac --sdk-auth
-#   ACR_LOGIN_SERVER          — e.g. yourregistry.azurecr.io
-#   ACR_USERNAME              — ACR admin username
-#   ACR_PASSWORD              — ACR admin password
-#   AZURE_WEBAPP_NAME         — App Service name
-#   AZURE_RESOURCE_GROUP      — Resource group name
-#   SECRET_KEY                — FastAPI JWT secret (32+ chars)
-#   POSTGRES_PASSWORD         — Database password
-#   ADMIN_PASSWORD            — Seed admin password
-# ══════════════════════════════════════════════════════════════════
+# Required GitHub Secrets:
+#   AZURE_CREDENTIALS, ACR_LOGIN_SERVER, ACR_USERNAME, ACR_PASSWORD,
+#   AZURE_WEBAPP_NAME, AZURE_RESOURCE_GROUP, SECRET_KEY,
+#   POSTGRES_PASSWORD, POSTGRES_USER, DB_HOST, ADMIN_PASSWORD, ADMIN_EMAIL
 
-name: "CI/CD — Build, Test, Deploy"
+name: "CI/CD - Build, Test, Deploy"
 
 on:
   push:
-    branches:
-      - main       # production deploy
-      - staging    # staging deploy
+    branches: [main]
   pull_request:
-    branches:
-      - main       # build + test only
+    branches: [main]
 
 env:
-  IMAGE_NAME:  cc-underwriting-api
-  PYTHON_VER:  "3.11"
+  IMAGE_NAME: cc-underwriting-api
+  PYTHON_VER: "3.11"
 
 jobs:
 
-  # ════════════════════════════════════════════════════════════════
-  # JOB 1: test — lint + unit tests (runs on every push/PR)
-  # ════════════════════════════════════════════════════════════════
+  # JOB 1: Lint and Test
   test:
-    name: "Lint & Test"
+    name: "Lint and Test"
     runs-on: ubuntu-latest
 
     services:
-      # Spin up a real PostgreSQL for integration tests
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB:       cc_test
-          POSTGRES_USER:     ccapi
+          POSTGRES_DB: cc_test
+          POSTGRES_USER: ccapi
           POSTGRES_PASSWORD: test_pass
         ports:
           - 5432:5432
@@ -63,17 +44,17 @@ jobs:
           --health-retries 5
 
     env:
-      DATABASE_URL:  "postgresql://ccapi:test_pass@localhost:5432/cc_test"
-      SECRET_KEY:    "test-secret-key-not-for-production-at-all"
-      MODEL_PATH:    "models/cc_model_v1.joblib"
+      DATABASE_URL: "postgresql://ccapi:test_pass@localhost:5432/cc_test"
+      SECRET_KEY: "test-secret-key-not-for-production-at-all"
+      MODEL_PATH: "models/cc_model_v1.joblib"
       ADMIN_PASSWORD: "TestAdmin@123"
-      ADMIN_EMAIL:   "admin@test.local"
+      ADMIN_EMAIL: "admin@test.local"
 
     steps:
       - name: "Checkout code"
         uses: actions/checkout@v4
 
-      - name: "Set up Python ${{ env.PYTHON_VER }}"
+      - name: "Set up Python"
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VER }}
@@ -88,42 +69,28 @@ jobs:
       - name: "Lint with ruff (non-blocking)"
         run: |
           pip install ruff
-          ruff check app/ --exit-zero  # warns but doesn't fail the build
+          ruff check app/ --exit-zero
 
       - name: "Check model artifact exists"
         run: |
           if [ ! -f "models/cc_model_v1.joblib" ]; then
-            echo "❌ Model file missing: models/cc_model_v1.joblib"
-            echo "Run: python ml/train.py  to generate it"
+            echo "Model file missing: models/cc_model_v1.joblib"
+            echo "Run: python ml/train.py to generate it"
             exit 1
           fi
-          echo "✅ Model artifact found"
+          echo "Model artifact found"
           ls -lh models/
 
-      - name: "Run unit + integration tests"
+      - name: "Run tests"
         run: |
-          python -m pytest tests/ -v \
-            --tb=short \
-            --junitxml=test-results.xml \
-            -x   # stop on first failure
+          python -m pytest tests/ -v --tb=short -x
 
-      - name: "Upload test results"
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results
-          path: test-results.xml
-
-
-  # ════════════════════════════════════════════════════════════════
-  # JOB 2: build-and-push — build Docker image, push to ACR
-  #         Only runs on push to main or staging (not PRs)
-  # ════════════════════════════════════════════════════════════════
+  # JOB 2: Build Docker image and push to ACR
   build-and-push:
-    name: "Build Docker Image & Push to ACR"
+    name: "Build and Push to ACR"
     runs-on: ubuntu-latest
-    needs: test    # only runs if tests pass
-    if: github.event_name == 'push'   # not on PRs
+    needs: test
+    if: github.event_name == 'push'
 
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
@@ -135,53 +102,41 @@ jobs:
       - name: "Set image tag"
         id: meta
         run: |
-          # Tag format: branch-shortsha  e.g. main-a1b2c3d
           BRANCH=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g')
           SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
           TAG="${BRANCH}-${SHA}"
           echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "📦 Image tag: ${TAG}"
+          echo "Image tag: ${TAG}"
 
-      - name: "Login to Azure Container Registry"
+      - name: "Login to ACR"
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ACR_LOGIN_SERVER }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: "Set up Docker Buildx (multi-platform builder)"
+      - name: "Set up Docker Buildx"
         uses: docker/setup-buildx-action@v3
 
       - name: "Build and push Docker image"
         uses: docker/build-push-action@v5
         with:
           context: .
-          file:    ./Dockerfile
-          push:    true
-          # Tag with both the version tag AND 'latest' for main branch
+          file: ./Dockerfile
+          push: true
           tags: |
             ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
             ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
-          # Cache layers from registry — speeds up subsequent builds
           cache-from: type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:buildcache
-          cache-to:   type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
-          # Build metadata labels
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+          cache-to: type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
 
-      - name: "✅ Image pushed"
+      - name: "Image pushed successfully"
         run: |
           echo "Image: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}"
 
-
-  # ════════════════════════════════════════════════════════════════
-  # JOB 3: deploy-webapp — Azure App Service (Web App for Containers)
-  #         Only on push to main
-  # ════════════════════════════════════════════════════════════════
+  # JOB 3: Deploy to Azure Web App
   deploy-webapp:
-    name: "Deploy → Azure Web App"
+    name: "Deploy to Azure Web App"
     runs-on: ubuntu-latest
     needs: build-and-push
     if: github.ref == 'refs/heads/main'
@@ -195,17 +150,11 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-          # AZURE_CREDENTIALS is the JSON output of:
-          # az ad sp create-for-rbac --name "cc-api-gh-actions" \
-          #   --role contributor \
-          #   --scopes /subscriptions/<sub-id>/resourceGroups/<rg> \
-          #   --sdk-auth
 
-      - name: "Configure App Service — container image"
+      - name: "Configure App Service settings"
         uses: azure/appservice-settings@v1
         with:
           app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
-          # Tell App Service which image to pull from ACR
           app-settings-json: |
             [
               {"name": "DOCKER_REGISTRY_SERVER_URL",      "value": "https://${{ secrets.ACR_LOGIN_SERVER }}"},
@@ -220,85 +169,30 @@ jobs:
               {"name": "DEBUG",                            "value": "false"}
             ]
 
-      - name: "Deploy container to Azure Web App"
+      - name: "Deploy container to Web App"
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
-          images:   "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }}"
+          images: "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }}"
 
       - name: "Wait for App Service to start"
         run: sleep 30
 
-      - name: "Smoke test — /health endpoint"
+      - name: "Smoke test - health endpoint"
         run: |
           URL="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
           echo "Testing: $URL"
           for i in 1 2 3 4 5; do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || echo "000")
-            echo "Attempt $i — HTTP $STATUS"
+            echo "Attempt $i - HTTP $STATUS"
             if [ "$STATUS" = "200" ]; then
-              echo "✅ Health check passed"
+              echo "Health check passed"
               exit 0
             fi
             sleep 15
           done
-          echo "❌ Health check failed after 5 attempts"
+          echo "Health check failed after 5 attempts"
           exit 1
-
-      - name: "Azure logout"
-        if: always()
-        run: az logout
-
-
-  # ════════════════════════════════════════════════════════════════
-  # JOB 4: deploy-aci — Azure Container Instances (alternative/staging)
-  #         Deploys the same image to ACI — cheaper for low-traffic
-  #         or staging environments.  Runs on push to staging branch.
-  # ════════════════════════════════════════════════════════════════
-  deploy-aci:
-    name: "Deploy → Azure Container Instance (Staging)"
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    if: github.ref == 'refs/heads/staging'
-
-    steps:
-      - name: "Login to Azure"
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: "Deploy to Azure Container Instances"
-        uses: azure/aci-deploy@v1
-        with:
-          resource-group:  ${{ secrets.AZURE_RESOURCE_GROUP }}
-          name:            cc-underwriting-api-staging
-          image:           "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }}"
-          registry-login-server:  ${{ secrets.ACR_LOGIN_SERVER }}
-          registry-username:      ${{ secrets.ACR_USERNAME }}
-          registry-password:      ${{ secrets.ACR_PASSWORD }}
-          location:        eastus
-          ports:           "8000"
-          os-type:         Linux
-          cpu:             1
-          memory:          2
-          environment-variables: >
-            DATABASE_URL=postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ secrets.DB_HOST }}:5432/cc_underwriting?sslmode=require
-            SECRET_KEY=${{ secrets.SECRET_KEY }}
-            MODEL_PATH=models/cc_model_v1.joblib
-            ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
-            DEBUG=false
-          # Secure vars go via secure-environment-variables — not logged
-          secure-environment-variables: >
-            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-            SECRET_KEY=${{ secrets.SECRET_KEY }}
-
-      - name: "Get ACI public IP"
-        run: |
-          IP=$(az container show \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --name cc-underwriting-api-staging \
-            --query ipAddress.ip -o tsv)
-          echo "🌐 Staging ACI IP: http://${IP}:8000/docs"
 
       - name: "Azure logout"
         if: always()
