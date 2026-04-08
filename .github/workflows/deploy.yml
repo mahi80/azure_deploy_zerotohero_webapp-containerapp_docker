@@ -32,7 +32,7 @@ jobs:
       DATABASE_URL: postgresql://ccapi:test_pass@localhost:5432/cc_test
       SECRET_KEY: test-secret-key-not-for-production
       MODEL_PATH: models/cc_model_v1.joblib
-      ADMIN_PASSWORD: TestAdmin123
+      ADMIN_PASSWORD: Test@123
       ADMIN_EMAIL: admin@test.local
     steps:
       - uses: actions/checkout@v4

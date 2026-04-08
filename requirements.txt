@@ -6,10 +6,11 @@ sqlalchemy==2.0.35
 psycopg2-binary==2.9.9
 alembic==1.13.3
 python-jose[cryptography]==3.3.0
+bcrypt==4.0.1
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.12
 lightgbm==4.5.0
-scikit-learn==1.5.2
+scikit-learn==1.8.0
 imbalanced-learn==0.12.4
 pandas==2.2.3
 numpy==1.26.4
